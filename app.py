@@ -3,7 +3,6 @@
 import requests
 
 #URL de un jugador de FutBin
-(ejemplo: Messi)
 url = "https://www.futbin.com/26/player/20801/lionel-messi"
 
 #Realizamos la peticion
