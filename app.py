@@ -1,7 +1,13 @@
 # print("Hola mundo")
 
+import os # <-- Agregado para KAN-11
+from dotenv import load_dotenv # <-- Agregado para KAN-11
 from curl_cffi import requests
 from bs4 import BeautifulSoup
+
+# --- CARGA DEL TOKEN (KAN-11) ---
+load_dotenv() # Lee el archivo .env
+TOKEN = os.getenv("TELEGRAM_TOKEN") # Guarda el token en esta variable
 
 def limpiar_precio(precio_texto):
     """Lógica de la KAN-8: Convierte texto a entero (ej: '15.5K' -> 15500)"""
@@ -43,6 +49,12 @@ def obtener_precio_actual(url_jugador):
         return 0
 
 if __name__ == "__main__":
+    # --- VERIFICACIÓN DEL TOKEN (Agregado para KAN-11) ---
+    if TOKEN:
+        print("✅ Token cargado exitosamente desde el archivo .env")
+    else:
+        print("❌ Error: No se encontró el TOKEN en el archivo .env")
+
     # URL de prueba para Messi en FC25
     url_messi = "https://www.futwiz.com/en/fc25/player/lionel-messi/45"
     
