@@ -6,13 +6,13 @@ from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# --- CONFIGURACIÓN ---
+# --- 1. CONFIGURACIÓN (KAN-11) ---
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# --- LÓGICA DE PRECIOS (KAN-8 y KAN-9) ---
+# --- 2. LÓGICA DE PRECIOS (KAN-8 y KAN-9) ---
 def limpiar_precio(precio_texto):
-    """Convierte texto a entero (ej: '15.5K' -> 15500)"""
+    """Lógica de la KAN-8: Limpia el texto de la web"""
     if not precio_texto or any(x in precio_texto for x in ["No listado", "Error"]):
         return 0
     p = precio_texto.strip().upper().replace(',', '')
@@ -24,7 +24,7 @@ def limpiar_precio(precio_texto):
         return 0
 
 def obtener_precio_actual(url_jugador):
-    """Retorna el precio entero"""
+    """Lógica de la KAN-9: Extrae el precio real"""
     try:
         response = requests.get(url_jugador, impersonate="chrome110", timeout=15)
         if response.status_code == 200:
@@ -36,29 +36,26 @@ def obtener_precio_actual(url_jugador):
     except:
         return 0
 
-# --- LÓGICA DEL BOT (KAN-12) ---
+# --- 3. COMANDOS DEL BOT (KAN-12 y KAN-13) ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Responde al comando /start"""
+    """Respuesta de la KAN-12"""
     await update.message.reply_text("Hola, estoy listo para predecir el mercado")
 
-async def precio_messi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando extra para probar que todo funciona"""
-    await update.message.reply_text("Buscando precio de Messi...")
-    url = "https://www.futwiz.com/en/fc25/player/lionel-messi/45"
-    precio = obtener_precio_actual(url)
-    await update.message.reply_text(f"💰 Messi cuesta actualmente: {precio} monedas.")
+async def precio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando Mock de la KAN-13: Siempre responde 1000"""
+    await update.message.reply_text("El jugador cuesta 1000 monedas")
 
+# --- 4. EJECUCIÓN ---
 if __name__ == "__main__":
-    if not TOKEN:
-        print("❌ Error: No hay TOKEN en el archivo .env")
-    else:
-        print("🚀 Bot iniciado. Esperando mensajes...")
-        # Construimos el bot
+    if TOKEN:
+        print("🚀 Bot iniciado correctamente...")
         app = ApplicationBuilder().token(TOKEN).build()
         
-        # Agregamos los comandos
+        # Registro de comandos
         app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("messi", precio_messi))
+        app.add_handler(CommandHandler("precio", precio))
         
-        # El bot se queda escuchando 
         app.run_polling()
+    else:
+        print("❌ Error: No se encontró el TOKEN en el archivo .env")
