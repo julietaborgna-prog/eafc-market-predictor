@@ -52,7 +52,7 @@ if __name__ == "__main__":
         print("🚀 Bot iniciado correctamente...")
         app = ApplicationBuilder().token(TOKEN).build()
         
-        # Registro de comandos
+        # Registro de comandos 
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("precio", precio))
         
