@@ -8,100 +8,84 @@ from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import ContextTypes, ApplicationBuilder, CommandHandler
 
-# ==============================================================================
-# --- IMPORTS DE LÓGICA EXTERNA Y MÓDULOS DE BASE DE DATOS ---
-# ==============================================================================
-# Estos módulos deben residir en las carpetas /bot y /database respectivamente.
-# Asegúrate de que existan los archivos __init__.py en cada directorio.
+# --- IMPORTS DE LOGICA EXTERNA (FUNDAMENTALES) ---
+# Asegúrate de haber creado los archivos en /bot y /database como vimos antes
 from bot.motor_reglas import analizar_filtracion_y_recomendar
 from database.crud import (
     registrar_suscriptor, 
     obtener_suscriptores, 
     obtener_suscriptores_separados, 
     contar_jugadores, 
-    buscar_jugador_por_nombre
+    buscar_jugador_por_nombre,
+    actualizar_vip_usuario  # Agregado para la KAN-34
 )
 
-# Variable global para evitar duplicidad en el envío de filtraciones
+# Variables globales para el bot
 ultima_filtracion_vista = None
 
-# ==============================================================================
-# --- 1. CONFIGURACIÓN DE ENTORNO Y SISTEMA DE LOGGING (KAN-11) ---
-# ==============================================================================
-# El logging es vital para auditar el comportamiento del bot en producción.
+# --- 1. CONFIGURACIÓN DE ENTORNO Y LOGS (KAN-11) ---
+# Registro de actividad para debugear errores de conexión o de scraping
 logging.basicConfig(
     filename='bot.log', 
     level=logging.INFO, 
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
-# Cargamos las variables de entorno desde el archivo .env
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# ==============================================================================
-# --- 2. FUNCIONES DE BÚSQUEDA AVANZADA (SCRAPING ESTRUCTURAL) ---
-# ==============================================================================
+# --- 2. FUNCIONES DE BÚSQUEDA AVANZADA ---
 def get_player_price_futwiz(player_id, player_slug, fc_version=25):
     """
-    Función de legado del jefe para obtener precios en versiones específicas de FC.
-    Utiliza curl_cffi para saltar protecciones de tipo anti-bot.
+    Obtiene el precio de un jugador desde Futwiz para una versión específica de EA FC.
+    fc_version: El año del juego (ej: 25 para FC25, 26 para FC26, 27 para FC27)
     """
+    # La URL en futwiz sigue este formato general
     url = f"https://www.futwiz.com/en/fc{fc_version}/player/{player_slug}/{player_id}"
-    logging.info(f"Iniciando scraping avanzado en Futwiz para ID: {player_id}")
+    logging.info(f"Iniciando consulta avanzada en Futwiz: {url}")
     
     try:
-        # Simulamos un navegador Chrome actualizado para evitar bloqueos
+        # Simulación de navegador para evitar bloqueos de Cloudflare
         response = requests.get(url, impersonate="chrome110", timeout=15)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Buscamos la clase específica que contiene el precio en Futwiz (.price-num)
             precio_element = soup.select_one('.price-num')
             
             if precio_element:
-                precio_raw = precio_element.text.strip()
-                logging.info(f"Precio obtenido exitosamente: {precio_raw}")
-                return precio_raw
+                precio = precio_element.text.strip()
+                logging.info(f"Precio recuperado: {precio}")
+                return precio
             else:
                 return "No listado / Extinto"
         elif response.status_code == 404:
-            logging.warning(f"Jugador no encontrado (404) en URL: {url}")
-            return "Error 404: El jugador no existe en la base de datos de Futwiz."
+            return "El jugador no existe en esta versión o la URL es incorrecta."
         else:
-            return f"Error de servidor HTTP: {response.status_code}"
+            return f"Error HTTP {response.status_code}"
             
     except Exception as e:
-        logging.error(f"Fallo crítico en get_player_price_futwiz: {str(e)}")
-        return f"Error de conexión: {str(e)}"
+        logging.error(f"Error de red en get_player_price_futwiz: {e}")
+        return f"Error de conexión: {e}"
 
-# ==============================================================================
-# --- 3. PROCESAMIENTO Y LIMPIEZA DE DATOS DE MERCADO (KAN-8 y KAN-9) ---
-# ==============================================================================
+# --- 3. LÓGICA DE PRECIOS DEL BOT (KAN-8 y KAN-9) ---
 def limpiar_precio(precio_texto):
-    """
-    Transforma strings de precio (ej: '1.2M' o '55K') en valores enteros.
-    Es fundamental para cálculos matemáticos posteriores en el motor de reglas.
-    """
+    """Limpia el texto del precio y lo convierte a entero (ej: 55K -> 55000)"""
     if not precio_texto or any(x in precio_texto for x in ["No listado", "Error", "Extinto"]):
         return 0
-    
-    # Limpiamos caracteres no numéricos comunes
-    p = precio_texto.strip().upper().replace(',', '').replace(' ', '')
-    
+    p = precio_texto.strip().upper().replace(',', '')
     try:
-        if 'M' in p:
-            return int(float(p.replace('M', '')) * 1000000)
         if 'K' in p:
             return int(float(p.replace('K', '')) * 1000)
         return int(p)
     except Exception as e:
-        logging.error(f"Error parseando el precio '{precio_texto}': {e}")
+        logging.error(f"Fallo al limpiar precio {precio_texto}: {e}")
         return 0
 
 def obtener_precio_actual(url_jugador):
-    """Realiza un scrapeo rápido para la visualización del usuario."""
+    """Scraping rápido para los comandos integrados del bot"""
     try:
-        logging.info(f"Consultando precio rápido para: {url_jugador}")
+        logging.info(f"Scrapeando URL: {url_jugador}")
         response = requests.get(url_jugador, impersonate="chrome110", timeout=15)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -110,42 +94,41 @@ def obtener_precio_actual(url_jugador):
                 return limpiar_precio(precio_element.text.strip())
         return 0
     except Exception as e:
-        logging.error(f"Excepción en obtener_precio_actual: {e}")
+        logging.error(f"Error en obtener_precio_actual: {e}")
         return 0
 
-# ==============================================================================
-# --- 4. GESTIÓN DE ALERTAS SEGMENTADAS (KAN-31, KAN-32) ---
-# ==============================================================================
+# --- 4. TAREAS AUTOMÁTICAS: KAN-31 (DELAY) Y KAN-32 (TEXTO VIP) ---
+
 async def enviar_alerta_retrasada(context: ContextTypes.DEFAULT_TYPE):
     """
-    KAN-31: Ejecuta el envío a usuarios Free tras cumplirse el delay de 15 minutos.
-    KAN-32: Añade el texto publicitario para fomentar la conversión a VIP.
+    KAN-31: Envía la alerta a usuarios Free tras 15 minutos.
+    KAN-32: Concatena el mensaje de invitación a VIP.
     """
     datos = context.job.data
     chat_ids_gratis = datos['ids']
-    mensaje_original = datos['mensaje']
+    mensaje_base = datos['mensaje']
     
-    # KAN-32: Mensaje de monetización
+    # KAN-32: Texto requerido para incentivar la suscripción VIP
     footer_vip = (
         "\n\n⏳ *Recibiste esta alerta con 15 min de retraso. "
         "Para recibirla al instante y asegurar tu ganancia, actualizá a VIP con /vip*"
     )
     
-    mensaje_final = f"{mensaje_original}{footer_vip}"
+    mensaje_final = f"{mensaje_base}{footer_vip}"
     
-    logging.info(f"Procesando envío programado (KAN-31) para {len(chat_ids_gratis)} usuarios.")
+    logging.info(f"Ejecutando KAN-31/32 para {len(chat_ids_gratis)} usuarios.")
     
     for chat_id in chat_ids_gratis:
         try:
             await context.bot.send_message(chat_id=chat_id, text=mensaje_final, parse_mode='Markdown')
         except Exception as e:
-            logging.error(f"No se pudo entregar alerta programada al chat {chat_id}: {e}")
+            logging.error(f"Error enviando a {chat_id}: {e}")
 
 async def chequear_feed_periodico(context: ContextTypes.DEFAULT_TYPE):
-    """Revisa el feed RSS de noticias cada minuto en búsqueda de Leaks o SBCs."""
+    """Revisa el feed de noticias buscando filtraciones cada 60 segundos"""
     global ultima_filtracion_vista
-    url_feed = "https://www.fifaultimateteam.it/en/feed/"
     
+    url_feed = "https://www.fifaultimateteam.it/en/feed/"
     try:
         feed = feedparser.parse(url_feed)
         if feed.entries:
@@ -153,123 +136,140 @@ async def chequear_feed_periodico(context: ContextTypes.DEFAULT_TYPE):
             titulo = entrada.title
             link = entrada.link
             
-            # Filtro de relevancia: solo noticias de mercado y nuevas filtraciones
+            # Filtro KAN-16: Solo SBCs o Leaks nuevos
             if ("SBC" in titulo.upper() or "LEAK" in titulo.upper()) and link != ultima_filtracion_vista:
                 ultima_filtracion_vista = link
                 
-                logging.info(f"Nueva filtración detectada en el feed: {titulo}")
+                logging.info(f"Filtración detectada: {titulo}")
                 
-                # Procesamos con el motor de reglas externo
+                # Análisis mediante el Motor de Reglas
                 recomendacion = analizar_filtracion_y_recomendar(titulo)
-                full_msg = f"🚨 **ALERTA: NUEVA FILTRACIÓN DETECTADA** 🚨\n\n{titulo}\n🔗 {link}"
-                
+                full_msg = f"🚨 **NUEVA FILTRACIÓN** 🚨\n\n{titulo}\n🔗 {link}"
                 if recomendacion:
-                    full_msg += f"\n\n💡 **Análisis del Motor:**\n{recomendacion}"
+                    full_msg += f"\n\n💡 **Recomendación:**\n{recomendacion}"
                 
-                # Obtención de usuarios segmentados desde la base de datos
+                # Segmentación de usuarios
                 listas = obtener_suscriptores_separados()
                 vips = listas.get('vip', [])
                 gratis = listas.get('gratis', [])
                 
-                # 1. Envío PRIORITARIO a usuarios VIP (Sin delay)
+                # 1. VIP: Envío inmediato
                 for chat_id in vips:
                     await context.bot.send_message(chat_id=chat_id, text=full_msg, parse_mode='Markdown')
                 
-                # 2. Programación (KAN-31) para usuarios Free: 15 minutos (900s)
+                # 2. Free: Programar para 15 minutos después (900 segundos)
                 if gratis:
                     context.job_queue.run_once(
                         enviar_alerta_retrasada, 
                         when=900, 
                         data={'ids': gratis, 'mensaje': full_msg}
                     )
-                    logging.info("Alerta programada en JobQueue para segmento gratuito.")
+                    logging.info("KAN-31: Alerta para usuarios Free programada en JobQueue.")
                         
     except Exception as e:
-        logging.error(f"Error crítico en el bucle de feed: {e}")
+        logging.error(f"Error en tarea periódica: {e}")
 
-# ==============================================================================
-# --- 5. COMANDOS DE USUARIO (KAN-12, KAN-33) ---
-# ==============================================================================
+# --- 5. COMANDOS DEL BOT (TELEGRAM HANDLERS) ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Comando de inicio y registro de usuarios."""
-    user = update.effective_chat
-    if registrar_suscriptor(user.id, user.username, user.type):
-        await update.message.reply_text("¡Hola! Estás suscrito correctamente. Recibirás alertas de mercado aquí. 🛎️")
+    """Registra al usuario en la base de datos y da bienvenida"""
+    chat_id = update.effective_chat.id
+    username = update.effective_chat.username
+    tipo = update.effective_chat.type
+    
+    if registrar_suscriptor(chat_id, username, tipo):
+        await update.message.reply_text("¡Bienvenido! Ya estás suscrito a las Alertas Automáticas de FC 25. 🛎️")
     else:
-        await update.message.reply_text("Ya te encuentras registrado en nuestra base de datos. 🛎️")
+        await update.message.reply_text("¡Hola! Ya te encuentras en nuestra lista de suscriptores. 🛎️")
+
+async def precio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Consulta de precio manual"""
+    if not context.args:
+        await update.message.reply_text("⚠️ Indica una URL de FutWiz después de /precio")
+        return
+    await update.message.reply_text("⏳ Obteniendo precio en tiempo real...")
+    p = obtener_precio_actual(context.args[0])
+    await update.message.reply_text(f"💰 El precio es: **{p}** monedas.")
 
 async def vip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    KAN-33: Comando informativo sobre la suscripción VIP.
+    Muestra información sobre la suscripción VIP
+   
     """
-    beneficios_msg = (
-        "💎 **MEMBRESÍA PREMUM (VIP)** 💎\n\n"
-        "✨ **Beneficios Exclusivos:**\n"
-        "• Alertas de filtraciones al instante (0 delay).\n"
-        "• Recomendaciones de inversión detalladas.\n"
-        "• Acceso a comandos de búsqueda ilimitados.\n\n"
-        "💰 **Costo Mensual:** $5 USD / 5.000 ARS\n\n"
-        "💳 **Métodos de Pago:**\n"
-        "• **Alias Mercado Pago:** tu.bot.pago\n"
-        "• **Binance ID:** 12345678\n\n"
-        "👉 *Envía el comprobante de transferencia a @TuUsuario para activar tu rango VIP.*"
+    msj = (
+        "💎 **Suscripción VIP** 💎\n\n"
+        "• Alertas al instante (sin 15m de espera).\n"
+        "• Análisis detallado de inversión.\n"
+        "• Soporte 24/7.\n\n"
+        "💰 **Precio Mensual:** $5 USD / 5.000 ARS\n"
+        "💳 **Alias:** tu.bot.pago\n\n"
+        "Escribe a @SoporteBot con tu comprobante para activar tu cuenta."
     )
-    await update.message.reply_text(beneficios_msg, parse_mode='Markdown')
+    await update.message.reply_text(msj, parse_mode='Markdown')
 
-async def precio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Consulta manual de precios vía URL."""
-    if not context.args:
-        await update.message.reply_text("⚠️ Uso: /precio <URL_DE_FUTWIZ>")
+async def setvip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    KAN-34: Comando de Admin Oculto para activar usuarios.
+    Formato: /setvip [ID_DEL_USUARIO] [DIAS]
+    """
+    # Reemplazar con ID real para que solo nosotros podamos usarlo
+    MI_ID_ADMIN = 123456789 
+    
+    if update.effective_user.id != MI_ID_ADMIN:
+        return # Comando oculto para otros
+
+    if len(context.args) < 2:
+        await update.message.reply_text("⚠️ Uso: /setvip [ID_DEL_USUARIO] [DIAS]")
         return
-    await update.message.reply_text("⏳ Consultando servidores externos...")
-    p = obtener_precio_actual(context.args[0])
-    await update.message.reply_text(f"💰 El precio actual es: **{p}** monedas.")
+
+    user_id = int(context.args[0])
+    dias = int(context.args[1])
+
+    if actualizar_vip_usuario(user_id, dias):
+        await update.message.reply_text(f"✅ Usuario {user_id} actualizado a VIP por {dias} días.")
+    else:
+        await update.message.reply_text("❌ No se encontró al usuario en la base de datos.")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Muestra el estado actual del bot."""
+    """Estadísticas globales del sistema"""
     total_j = contar_jugadores()
     total_s = len(obtener_suscriptores())
-    await update.message.reply_text(f"📊 **Estado del Bot:**\n- Jugadores rastreados: {total_j}\n- Suscriptores totales: {total_s}")
+    await update.message.reply_text(f"📊 **Stats:**\n- Jugadores: {total_j}\n- Suscriptores: {total_s}", parse_mode='Markdown')
 
 async def buscar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Busca un jugador en la base de datos local."""
+    """Busca jugadores por nombre en la base de datos"""
     if not context.args:
-        await update.message.reply_text("⚠️ Uso: /buscar <Nombre>")
+        await update.message.reply_text("⚠️ Ejemplo: /buscar Messi")
         return
     query = " ".join(context.args)
     resultados = buscar_jugador_por_nombre(query)
     if not resultados:
-        await update.message.reply_text(f"❌ No se encontró a '{query}'.")
+        await update.message.reply_text(f"❌ No hay resultados para '{query}'.")
         return
-    
-    lista_res = f"🔍 **Resultados para '{query}':**\n\n"
+    res_msg = f"🔍 **Resultados para '{query}':**\n\n"
     for r in resultados[:10]:
-        lista_res += f"• {r['nombre']} ({r['rating']}) | {r['precio_actual']} 🪙\n"
-    await update.message.reply_text(lista_res, parse_mode='Markdown')
+        res_msg += f"• {r['nombre']} ({r['rating']} - {r['version_carta']}) | Precio: {r['precio_actual']} 🪙\n"
+    await update.message.reply_text(res_msg, parse_mode='Markdown')
 
-# ==============================================================================
-# --- 6. PUNTO DE ENTRADA PRINCIPAL ---
-# ==============================================================================
+# --- 6. EJECUCIÓN DEL SISTEMA ---
 if __name__ == "__main__":
     if TOKEN:
-        print("🚀 Bot iniciado. Cargando KAN-31, KAN-32 y KAN-33...")
-        logging.info("Sistema arrancado. Iniciando JobQueue y manejadores.")
+        logging.info("Bot en línea. Iniciando JobQueue y Polling.")
         
-        # Construcción de la aplicación de Telegram
         app = ApplicationBuilder().token(TOKEN).build()
         
-        # Programamos el chequeo de filtraciones cada 60 segundos
+        # Iniciar revisión periódica del feed (cada 60 segundos)
         app.job_queue.run_repeating(chequear_feed_periodico, interval=60, first=10)
         
-        # Registro de comandos de la interfaz de usuario
+        # Registro de comandos
         app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("vip", vip))
         app.add_handler(CommandHandler("precio", precio))
+        app.add_handler(CommandHandler("vip", vip))
+        app.add_handler(CommandHandler("setvip", setvip)) # Registro KAN-34
         app.add_handler(CommandHandler("stats", stats))
         app.add_handler(CommandHandler("buscar", buscar))
         
-        # Inicio del modo escucha
         app.run_polling()
     else:
-        print("❌ Error: TELEGRAM_TOKEN no definido en el archivo .env")
-        logging.error("No se pudo iniciar el bot por falta de credenciales.")
+        print("❌ ERROR: Falta TELEGRAM_TOKEN en el archivo .env")
+        logging.error("No se pudo iniciar el bot: Token ausente.")
